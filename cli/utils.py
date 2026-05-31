@@ -187,15 +187,28 @@ def _fetch_openrouter_models() -> List[Tuple[str, str]]:
         return []
 
 
-def select_openrouter_model() -> str:
-    """Select an OpenRouter model from the newest available, or enter a custom ID."""
-    models = _fetch_openrouter_models()
+def _fetch_custom_endpoint_models(base_url: str) -> List[Tuple[str, str]]:
+    """Fetch available models from a custom OpenAI-compatible endpoint."""
+    import requests
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        resp = requests.get(f"{base_url}/models", headers=headers, timeout=10)
+        resp.raise_for_status()
+        models = resp.json().get("data", [])
+        return [(m.get("name") or m["id"], m["id"]) for m in models]
+    except Exception as e:
+        console.print(f"\n[yellow]Could not fetch models from {base_url}: {e}[/yellow]")
+        return []
 
-    choices = [questionary.Choice(name, value=mid) for name, mid in models[:5]]
+
+def _select_remote_model(models: List[Tuple[str, str]], prompt: str) -> str:
+    """Select a model from a fetched list, or enter a custom ID."""
+    choices = [questionary.Choice(name, value=mid) for name, mid in models]
     choices.append(questionary.Choice("Custom model ID", value="custom"))
 
     choice = questionary.select(
-        "Select OpenRouter Model (latest available):",
+        prompt,
         choices=choices,
         instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
         style=questionary.Style([
@@ -207,11 +220,17 @@ def select_openrouter_model() -> str:
 
     if choice is None or choice == "custom":
         return questionary.text(
-            "Enter OpenRouter model ID (e.g. google/gemma-4-26b-a4b-it):",
+            "Enter model ID:",
             validate=lambda x: len(x.strip()) > 0 or "Please enter a model ID.",
         ).ask().strip()
 
     return choice
+
+
+def select_openrouter_model() -> str:
+    """Select an OpenRouter model from the newest available, or enter a custom ID."""
+    models = _fetch_openrouter_models()
+    return _select_remote_model(models[:5], "Select OpenRouter Model (latest available):")
 
 
 def _prompt_custom_model_id() -> str:
@@ -222,10 +241,16 @@ def _prompt_custom_model_id() -> str:
     ).ask().strip()
 
 
-def _select_model(provider: str, mode: str) -> str:
+def _select_model(provider: str, mode: str, backend_url: str | None = None) -> str:
     """Select a model for the given provider and mode (quick/deep)."""
     if provider.lower() == "openrouter":
         return select_openrouter_model()
+
+    if provider.lower() == "custom":
+        models = _fetch_custom_endpoint_models(backend_url) if backend_url else []
+        if models:
+            return _select_remote_model(models, f"Select Your [{mode.title()}-Thinking LLM Engine]:")
+        return _prompt_custom_model_id()
 
     if provider.lower() == "azure":
         return questionary.text(
@@ -259,14 +284,14 @@ def _select_model(provider: str, mode: str) -> str:
     return choice
 
 
-def select_shallow_thinking_agent(provider) -> str:
+def select_shallow_thinking_agent(provider, backend_url: str | None = None) -> str:
     """Select shallow thinking llm engine using an interactive selection."""
-    return _select_model(provider, "quick")
+    return _select_model(provider, "quick", backend_url)
 
 
-def select_deep_thinking_agent(provider) -> str:
+def select_deep_thinking_agent(provider, backend_url: str | None = None) -> str:
     """Select deep thinking llm engine using an interactive selection."""
-    return _select_model(provider, "deep")
+    return _select_model(provider, "deep", backend_url)
 
 def _llm_provider_table() -> list[tuple[str, str, str | None]]:
     """(display_name, provider_key, base_url) for every supported provider.
@@ -290,6 +315,7 @@ def _llm_provider_table() -> list[tuple[str, str, str | None]]:
         ("OpenRouter", "openrouter", "https://openrouter.ai/api/v1"),
         ("Azure OpenAI", "azure", None),
         ("Ollama", "ollama", ollama_url),
+        ("Custom (OpenAI-compatible)", "custom", None),
     ]
 
 
@@ -321,12 +347,21 @@ def select_llm_provider() -> tuple[str, str | None]:
             ]
         ),
     ).ask()
-    
+
     if choice is None:
         console.print("\n[red]No LLM provider selected. Exiting...[/red]")
         exit(1)
 
     provider, url = choice
+
+    if provider == "custom":
+        url = os.environ.get("CUSTOM_LLM_BASE_URL", "")
+        if not url:
+            url = questionary.text(
+                "Enter base URL (e.g. https://your-gateway.com/v1):",
+                validate=lambda x: len(x.strip()) > 0 or "Please enter a URL.",
+            ).ask().strip()
+
     return provider, url
 
 

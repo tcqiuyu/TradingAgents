@@ -618,8 +618,8 @@ def get_user_selections():
                 "Step 7: Thinking Agents", "Select your thinking agents for analysis"
             )
         )
-        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
-        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
+        selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider, backend_url)
+        selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider, backend_url)
 
     # Step 8: Provider-specific thinking configuration
     thinking_level = None
@@ -999,7 +999,9 @@ def run_analysis(checkpoint: bool = False):
     config["quick_think_llm"] = selections["shallow_thinker"]
     config["deep_think_llm"] = selections["deep_thinker"]
     config["backend_url"] = selections["backend_url"]
-    config["llm_provider"] = selections["llm_provider"].lower()
+    # "custom" uses the openrouter code path (standard Chat Completions, no Responses API)
+    provider = selections["llm_provider"].lower()
+    config["llm_provider"] = "openrouter" if provider == "custom" else provider
     # Provider-specific thinking configuration
     config["google_thinking_level"] = selections.get("google_thinking_level")
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
@@ -1237,9 +1239,15 @@ def run_analysis(checkpoint: bool = False):
 
         # Streamed chunks are per-node deltas, not full state. Merge them
         # so every report field populated across the run is present.
+        # Deep-merge nested dicts (e.g. AgentState sub-dicts) so inner keys
+        # from earlier nodes are not overwritten by later partial updates.
         final_state = {}
         for chunk in trace:
-            final_state.update(chunk)
+            for key, value in chunk.items():
+                if isinstance(value, dict) and isinstance(final_state.get(key), dict):
+                    final_state[key] = {**final_state[key], **value}
+                else:
+                    final_state[key] = value
         decision = graph.process_signal(final_state["final_trade_decision"])
 
         # Update all agent statuses to completed
